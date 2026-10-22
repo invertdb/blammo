@@ -29,8 +29,14 @@ log.write_checkpoint(segment, &state)?;    // deletes the earlier segments
 - **Checkpoints** bound the log (Mohan et al., 1992, simplified): opaque state that holds before a segment.
   Writing one deletes the earlier segments. Recovery reads the latest checkpoint, then replays the segments from it
   on.
-  - A checkpoint is written to a temporary file, synced and renamed into place, so it exists whole or not at all.
-  - New files are made durable by syncing the directory.
+  - A checkpoint is written to a temporary file and renamed into place, so it exists whole or not at all.
+- **Durability** of the log's own bookkeeping (`Log::open_with`):
+  - `Full`, the default: new segments, rotated-out segments and checkpoints are synced, and so is the
+    directory, so they survive a crash of the machine. For a layer that syncs its records.
+  - `Process`: the same steps, not synced; the operating system keeps what was written. For a layer
+    whose records aren't synced either, where syncing the bookkeeping would only slow writes.
+- **Rotation** blocks appends only for the switch itself: the new segment is created first and the old
+  one synced after.
 - **Checkpointing while writes continue** (rotate, apply, capture, write) can replay a record the checkpoint
   already reflects, so applying must be idempotent, or the layer above must recognize what it already holds.
 
@@ -48,6 +54,7 @@ becomes the replicated commit log. That needs replication strategies different f
 - A corrupt record ends the last segment but is an error in an earlier one.
 - Checkpoints delete earlier segments and survive reopening; stale or unstarted checkpoints are refused.
 - An interrupted checkpoint leaves the previous one.
+- Process durability recovers the same way.
 
 ## References
 

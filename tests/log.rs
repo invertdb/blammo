@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 
-use blamo::Log;
+use blamo::{Durability, Log};
 
 fn records(log: &Log) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
@@ -120,4 +120,19 @@ fn an_interrupted_checkpoint_leaves_the_previous_one() {
     assert_eq!(log.checkpoint(), None);
     assert_eq!(records(&log), vec![b"a".to_vec(), b"b".to_vec()]);
     assert!(!dir.path().join("0000000000000001.checkpoint.new").exists());
+}
+
+#[test]
+fn process_durability_behaves_the_same() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let log = Log::open_with(dir.path(), Durability::Process).unwrap();
+        log.append(b"a").unwrap();
+        let segment = log.rotate().unwrap();
+        log.append(b"b").unwrap();
+        log.write_checkpoint(segment, b"state").unwrap();
+    }
+    let log = Log::open_with(dir.path(), Durability::Process).unwrap();
+    assert_eq!(log.checkpoint().unwrap(), b"state");
+    assert_eq!(records(&log), vec![b"b".to_vec()]);
 }

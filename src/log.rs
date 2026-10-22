@@ -13,10 +13,25 @@ struct Current {
     length: u64,
 }
 
+/// What a log's own bookkeeping (rotations and checkpoints) survives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Durability {
+    /// A crash of the machine: new segments, rotated-out segments and checkpoints are synced (and so is the
+    /// directory) before they count. For a layer that syncs its records.
+    #[default]
+    Full,
+    /// A crash of the process: the same steps, written atomically but not synced (the operating system keeps what
+    /// was written). For a layer whose records aren't synced either, so syncing the bookkeeping buys nothing.
+    Process,
+}
+
 /// A write-ahead log in a directory of its own.
 pub struct Log {
     directory: PathBuf,
+    durability: Durability,
     current: Mutex<Current>,
+    /// Held while rotating, so rotations don't interleave.
+    rotating: Mutex<()>,
     /// The latest checkpoint's segment (0 if none), and its bytes.
     checkpoint: Mutex<(u64, Option<Vec<u8>>)>,
 }
@@ -77,6 +92,11 @@ impl Log {
     /// Opens a log, creating it if need be. A torn tail on the last segment is dropped; damage anywhere else is an
     /// error. Segments and checkpoints older than the latest checkpoint are deleted.
     pub fn open(directory: impl AsRef<Path>) -> io::Result<Log> {
+        Log::open_with(directory, Durability::Full)
+    }
+
+    /// Opens a log with a [`Durability`] for its rotations and checkpoints.
+    pub fn open_with(directory: impl AsRef<Path>, durability: Durability) -> io::Result<Log> {
         let directory = directory.as_ref().to_path_buf();
         fs::create_dir_all(&directory)?;
         for entry in fs::read_dir(&directory)?.flatten() {
@@ -108,14 +128,14 @@ impl Log {
         let path = segment_path(&directory, segment);
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path)?;
         let length = file.metadata()?.len();
-        if live.is_empty() {
+        if live.is_empty() && durability == Durability::Full {
             sync_directory(&directory)?;
         }
         let data = match checkpoint {
             Some(id) => Some(read_file(&checkpoint_path(&directory, id))?),
             None => None,
         };
-        Ok(Log { directory, current: Mutex::new(Current { segment, file, length }), checkpoint: Mutex::new((from, data)) })
+        Ok(Log { directory, durability, current: Mutex::new(Current { segment, file, length }), rotating: Mutex::new(()), checkpoint: Mutex::new((from, data)) })
     }
 
     /// The latest checkpoint's bytes, or None if there's never been one.
@@ -195,13 +215,20 @@ impl Log {
 
     /// Syncs the current segment and starts a new one; every later record goes there. Returns the new segment's id,
     /// for [`Log::write_checkpoint`].
+    ///
+    /// Appends wait only for the switch itself: the new segment is created (and made durable) before it, and the
+    /// previous one is synced after.
     pub fn rotate(&self) -> io::Result<u64> {
-        let mut current = self.current.lock().unwrap();
-        current.file.sync_data()?;
-        let segment = current.segment + 1;
+        let _one = self.rotating.lock().unwrap();
+        let segment = self.current.lock().unwrap().segment + 1;
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(segment_path(&self.directory, segment))?;
-        sync_directory(&self.directory)?;
-        *current = Current { segment, file, length: 0 };
+        if self.durability == Durability::Full {
+            sync_directory(&self.directory)?;
+        }
+        let previous = std::mem::replace(&mut *self.current.lock().unwrap(), Current { segment, file, length: 0 });
+        if self.durability == Durability::Full {
+            previous.file.sync_data()?;
+        }
         Ok(segment)
     }
 
@@ -219,9 +246,13 @@ impl Log {
         let temporary = path.with_extension("checkpoint.new");
         let mut file = File::create(&temporary)?;
         file.write_all(state)?;
-        file.sync_all()?;
+        if self.durability == Durability::Full {
+            file.sync_all()?;
+        }
         fs::rename(&temporary, &path)?;
-        sync_directory(&self.directory)?;
+        if self.durability == Durability::Full {
+            sync_directory(&self.directory)?;
+        }
         *checkpoint = (segment, Some(state.to_vec()));
         let (segments, checkpoints) = listing(&self.directory)?;
         for id in segments.into_iter().filter(|&id| id < segment) {

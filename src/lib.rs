@@ -10,8 +10,10 @@
 //!   Writing one deletes the earlier segments. Recovery reads the latest checkpoint, then replays the segments from
 //!   it on.
 //!
-//! A checkpoint is written to a temporary file, synced and renamed into place, so it either exists whole or not at
-//! all. New segments and checkpoints are made durable by syncing the directory too.
+//! A checkpoint is written to a temporary file and renamed into place, so it either exists whole or not at all.
+//! With [`Durability::Full`] (the default), new segments, rotated-out segments and checkpoints are synced, and so is
+//! the directory, so they survive a crash of the machine; with [`Durability::Process`] they're written the same way
+//! but not synced, for a layer whose records aren't synced either.
 //!
 //! Taking a checkpoint while writes continue: rotate first, so every later record goes to the new segment; once
 //! every record in the earlier segments is applied, capture the state; then write the checkpoint for the new segment.
@@ -20,4 +22,4 @@
 
 mod log;
 
-pub use log::Log;
+pub use log::{Durability, Log};
