@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 
-use blamo::{Durability, Log};
+use blammo::{Durability, Log};
 
 fn records(log: &Log) -> Vec<Vec<u8>> {
     let mut out = Vec::new();

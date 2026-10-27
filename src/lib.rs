@@ -1,4 +1,4 @@
-//! blamo: the write-ahead log for invertdb (Gray and Reuter, 1993). Writes are logged before they're acknowledged,
+//! blammo: the write-ahead log for invertdb (Gray and Reuter, 1993). Writes are logged before they're acknowledged,
 //! then applied to the structures that hold them; after a crash, replaying the log reapplies whatever those
 //! structures hadn't made durable yet.
 //!

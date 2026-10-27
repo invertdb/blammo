@@ -1,10 +1,10 @@
-# blamo
+# blammo
 
 The write-ahead log for invertdb: writes are logged before they're acknowledged, then applied; after a crash,
 replaying the log reapplies whatever hadn't been made durable yet (Gray and Reuter, 1993).
 
 ```rust
-let log = blamo::Log::open("collection/log")?;
+let log = blammo::Log::open("collection/log")?;
 if let Some(state) = log.checkpoint() { /* restore state */ }
 log.replay(|record| { /* reapply */ Ok(()) })?;
 
