@@ -2,7 +2,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+use opentelemetry::global;
+use opentelemetry::metrics::{Counter, Histogram};
 
 /// Frame header: length (u32) and CRC-32 of the record (u32), little-endian.
 const FRAME: usize = 8;
@@ -11,6 +15,28 @@ struct Current {
     segment: u64,
     file: File,
     length: u64,
+}
+
+/// The log's metrics, made on first use (after a service installs its meter provider; no-ops until then).
+struct Instruments {
+    sync: Histogram<f64>,
+    appended: Counter<u64>,
+}
+
+fn instruments() -> &'static Instruments {
+    static INSTRUMENTS: OnceLock<Instruments> = OnceLock::new();
+    INSTRUMENTS.get_or_init(|| {
+        let meter = global::meter("blammo");
+        Instruments {
+            sync: meter
+                .f64_histogram("invertdb.log.sync.duration")
+                .with_unit("s")
+                .with_description("Time to make a log's appended records durable.")
+                .with_boundaries(vec![0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 1.0])
+                .build(),
+            appended: meter.u64_counter("invertdb.log.appended").with_unit("By").with_description("Bytes appended to logs, framing included.").build(),
+        }
+    })
 }
 
 /// What a log's own bookkeeping (rotations and checkpoints) survives.
@@ -98,6 +124,7 @@ impl Log {
     /// Opens a log with a [`Durability`] for its rotations and checkpoints.
     pub fn open_with(directory: impl AsRef<Path>, durability: Durability) -> io::Result<Log> {
         let directory = directory.as_ref().to_path_buf();
+        let _span = tracing::info_span!("log.open", path = %directory.display()).entered();
         fs::create_dir_all(&directory)?;
         for entry in fs::read_dir(&directory)?.flatten() {
             if entry.file_name().to_string_lossy().ends_with(".new") {
@@ -145,6 +172,7 @@ impl Log {
 
     /// Calls `apply` with every record since the latest checkpoint, in order.
     pub fn replay(&self, mut apply: impl FnMut(&[u8]) -> io::Result<()>) -> io::Result<u64> {
+        let span = tracing::info_span!("log.replay", records = tracing::field::Empty).entered();
         let from = self.checkpoint.lock().unwrap().0;
         let (segments, _) = listing(&self.directory)?;
         let mut count = 0;
@@ -163,6 +191,7 @@ impl Log {
                 at += FRAME + length;
             }
         }
+        span.record("records", count);
         Ok(count)
     }
 
@@ -184,13 +213,18 @@ impl Log {
         let at = current.length;
         current.file.write_all_at(&bytes, at)?;
         current.length += bytes.len() as u64;
+        instruments().appended.add(bytes.len() as u64, &[]);
         Ok(())
     }
 
     /// Makes every record appended so far durable.
     pub fn sync(&self) -> io::Result<()> {
+        let _span = tracing::info_span!("log.sync").entered();
+        let start = Instant::now();
         let file = self.current.lock().unwrap().file.try_clone()?;
-        file.sync_data()
+        file.sync_data()?;
+        instruments().sync.record(start.elapsed().as_secs_f64(), &[]);
+        Ok(())
     }
 
     /// Bytes in the current segment.
@@ -219,6 +253,7 @@ impl Log {
     /// Appends wait only for the switch itself: the new segment is created (and made durable) before it, and the
     /// previous one is synced after.
     pub fn rotate(&self) -> io::Result<u64> {
+        let _span = tracing::info_span!("log.rotate").entered();
         let _one = self.rotating.lock().unwrap();
         let segment = self.current.lock().unwrap().segment + 1;
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(segment_path(&self.directory, segment))?;
@@ -235,6 +270,7 @@ impl Log {
     /// Records `state` as what holds before segment `segment` (from [`Log::rotate`]), then deletes the earlier
     /// segments and checkpoints.
     pub fn write_checkpoint(&self, segment: u64, state: &[u8]) -> io::Result<()> {
+        let _span = tracing::info_span!("log.checkpoint", segment, bytes = state.len()).entered();
         if segment > self.current.lock().unwrap().segment {
             return Err(io::Error::new(ErrorKind::InvalidInput, format!("segment {segment} hasn't been started")));
         }

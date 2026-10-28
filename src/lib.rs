@@ -19,6 +19,10 @@
 //! every record in the earlier segments is applied, capture the state; then write the checkpoint for the new segment.
 //! Replay may then apply a record the checkpoint already reflects, so applying must be idempotent (or the layer
 //! above must recognize what it already holds).
+//!
+//! **Telemetry:** spans for opening, replay, sync, rotation and checkpoints (`tracing`), and the metrics
+//! `invertdb.log.sync.duration` and `invertdb.log.appended` (the `opentelemetry` API). Both do nothing until the
+//! program installs a subscriber and a meter provider.
 
 mod log;
 
