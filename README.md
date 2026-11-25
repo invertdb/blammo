@@ -63,3 +63,9 @@ becomes the replicated commit log. That needs replication strategies different f
   supporting fine-granularity locking and partial rollbacks using write-ahead logging. *ACM Transactions on Database
   Systems* 17(1).
 - Peterson, W. W., and Brown, D. T. (1961). Cyclic codes for error detection. *Proceedings of the IRE* 49(1).
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate by you, as
+defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
